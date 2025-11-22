@@ -1,0 +1,60 @@
+services:
+  devcontainer-prepare:
+    container_name: ${SERVICE_PREPARE}
+    image: ${IMAGE_NAME}:${IMAGE_TAG}
+    command: |
+      sh -c "
+        chown -R ${USER_UID}:${USER_GID} /v/local-share /v/config /v/cache /v/vscode-ext /v/vscode-ext-insiders
+      "
+    volumes:
+      - local-share:/v/local-share
+      - config:/v/config
+      - cache:/v/cache
+      - vscode-ext:/v/vscode-ext
+      - vscode-ext-insiders:/v/vscode-ext-insiders
+    env_file: .env
+  devcontainer:
+    container_name: ${SERVICE_MAIN}
+    init: true
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: ${BUILD_TARGET}
+      args:
+        USER_UID: ${USER_UID}
+        USER_GID: ${USER_GID}
+        USERNAME: ${USER}
+        IMAGE_NAME: ${IMAGE_NAME}
+        IMAGE_TAG: ${IMAGE_TAG}
+    env_file: .env
+    environment:
+      WORKSPACE_ROOT: /workspace
+    volumes:
+      - local-share:/home/${USER}/.local/share
+      - config:/home/${USER}/.config
+      - cache:/home/${USER}/.cache
+      - vscode-ext:/home/${USER}/.vscode-server/extensions
+      - vscode-ext-insiders:/home/${USER}/.vscode-server-insiders/extensions
+      - ${HOME}/.netrc:/home/${USER}/.netrc:ro
+      - ${HOME}/.gitconfig:/home/${USER}/.gitconfig:ro
+    network_mode: host
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    depends_on:
+      devcontainer-prepare:
+        condition: service_completed_successfully
+
+volumes:
+  local-share:
+    name: ${VOLUME_LOCAL_SHARE}
+  config:
+    name: ${VOLUME_CONFIG}
+  cache:
+    name: ${VOLUME_CACHE}
+  vscode-ext:
+    name: ${VOLUME_VSCODE_EXT}
+  vscode-ext-insiders:
+    name: ${VOLUME_VSCODE_EXT_INSIDERS}
+

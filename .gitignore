@@ -1,0 +1,3 @@
+# Environment files (generated)
+.devcontainer/docker/.env
+.devcontainer/docker/*.custom.yml

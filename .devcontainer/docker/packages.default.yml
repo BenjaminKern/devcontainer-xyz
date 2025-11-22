@@ -1,0 +1,32 @@
+# Default package definitions for devcontainer image
+# This file contains the default configuration that comes with the template.
+#
+# To customize without modifying this file:
+#   1. Create a 'packages.custom.yml' file in the same directory
+#   2. Use the same YAML structure (base/devenv sections)
+#   3. Custom packages will be merged with defaults during Docker build
+#
+# Note: The base Docker layer includes only essential tools:
+#   - curl, git, ca-certificates (via apt)
+#   - yq, uv, bazelisk (downloaded via curl)
+# Additional packages can be added to base.packages or devenv.packages below
+
+# Base image configuration (using ECR Public mirrors to avoid Docker Hub rate limits)
+image_name: public.ecr.aws/docker/library/ubuntu
+image_tag: "24.04"
+
+# Base packages (installed in base layer - kept minimal)
+# Add packages here if they're needed in both production and development
+base:
+  packages: []
+  python_tools:
+    - pre-commit
+
+# Development environment packages (installed in devenv layer only)
+devenv:
+  packages:
+    - bash-completion
+
+  # Python tools (installed via uvx-shim for lazy loading)
+  # These tools will be symlinked to /usr/local/bin and loaded on first use
+  python_tools: []

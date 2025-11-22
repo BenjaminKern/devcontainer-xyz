@@ -1,0 +1,23 @@
+{
+  "name": "${localEnv:USER}-devcontainer-${devcontainerId}",
+  "dockerComposeFile": [
+    "docker/docker-compose.default.yml",
+    "docker/docker-compose.custom.yml"
+  ],
+  "service": "devcontainer",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+  ],
+  "initializeCommand": "uv run ${localWorkspaceFolder}/.devcontainer/commands/initialize.py ${localWorkspaceFolder}/.devcontainer --suffix ${devcontainerId}",
+  "postStartCommand": "${containerWorkspaceFolder}/.devcontainer/commands/post_start.py",
+  "remoteUser": "${localEnv:USER}",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "github.copilot",
+        "github.copilot-chat"
+      ],
+    }
+  }
+}
