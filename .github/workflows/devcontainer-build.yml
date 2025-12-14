@@ -1,0 +1,330 @@
+name: Devcontainer Build Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-devcontainer-build:
+    name: Test Devcontainer Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Prepare host files
+        run: |
+          # Create required host files
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Build devcontainer
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Start devcontainer
+        run: |
+          devcontainer up --workspace-folder .
+
+      - name: Run tests in devcontainer
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing devcontainer environment ==='
+
+            # Test base tools
+            echo 'Testing base tools...'
+            git --version
+            curl --version
+            yq --version
+            uv --version
+            bazelisk --version
+
+            # Test user and workspace
+            echo 'Testing user and workspace...'
+            whoami
+            pwd
+            test -d /workspace || { echo 'ERROR: /workspace missing'; exit 1; }
+
+            # Test shell configuration
+            echo 'Testing shell configuration...'
+            test -f ~/.vscode_profile || { echo 'ERROR: .vscode_profile missing'; exit 1; }
+            test -f ~/.inputrc || { echo 'ERROR: .inputrc missing'; exit 1; }
+
+            # Test git configuration
+            echo 'Testing git configuration...'
+            git config --global --get alias.st || { echo 'ERROR: git aliases not configured'; exit 1; }
+
+            # Test lazy-loaded tools
+            echo 'Testing lazy-loaded tools...'
+            command -v pre-commit || { echo 'ERROR: pre-commit not available'; exit 1; }
+
+            echo '✓ All tests passed'
+          "
+
+      - name: Stop devcontainer
+        if: always()
+        run: |
+          devcontainer down --workspace-folder .
+
+  test-devcontainer-custom-packages:
+    name: Test Custom Package Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Create custom configuration
+        run: |
+          # Add custom packages
+          cat > .devcontainer/docker/packages.custom.yml << 'EOF'
+          base:
+            packages:
+              - vim
+            python_tools:
+              - ruff
+
+          devenv:
+            packages:
+              - htop
+              - tree
+            python_tools:
+              - black
+              - mypy
+          EOF
+
+          # Add custom compose settings
+          cat > .devcontainer/docker/docker-compose.custom.yml << 'EOF'
+          services:
+            devcontainer:
+              environment:
+                - CUSTOM_TEST_VAR=test_value
+          EOF
+
+      - name: Prepare host files
+        run: |
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Build with custom packages
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Start devcontainer
+        run: |
+          devcontainer up --workspace-folder .
+
+      - name: Verify custom packages
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing custom packages ==='
+
+            # Test custom apt packages
+            vim --version | head -1
+            htop --version
+            tree --version
+
+            # Test custom Python tools (will install on first use)
+            timeout 60s ruff --version
+            timeout 60s black --version
+            timeout 60s mypy --version
+
+            # Test custom environment variable
+            test \"\$CUSTOM_TEST_VAR\" = 'test_value' || { echo 'ERROR: CUSTOM_TEST_VAR not set'; exit 1; }
+
+            echo '✓ Custom configuration works'
+          "
+
+      - name: Stop devcontainer
+        if: always()
+        run: |
+          devcontainer down --workspace-folder .
+
+  test-devcontainer-features:
+    name: Test Devcontainer Features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Prepare host files
+        run: |
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Build devcontainer
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Test devcontainer features command
+        run: |
+          devcontainer features test --workspace-folder . || true
+
+      - name: Run devcontainer exec
+        run: |
+          devcontainer exec --workspace-folder . echo "Devcontainer exec works"
+
+      - name: Run devcontainer read-configuration
+        run: |
+          devcontainer read-configuration --workspace-folder .
+
+  test-devcontainer-rebuild:
+    name: Test Devcontainer Rebuild
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Prepare host files
+        run: |
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Initial build
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Modify configuration
+        run: |
+          cat > .devcontainer/docker/packages.custom.yml << 'EOF'
+          devenv:
+            packages:
+              - curl
+          EOF
+
+      - name: Rebuild devcontainer
+        run: |
+          devcontainer build --workspace-folder . --no-cache
+
+      - name: Verify rebuild
+        run: |
+          devcontainer up --workspace-folder .
+          devcontainer exec --workspace-folder . curl --version
+          devcontainer down --workspace-folder .
+
+  test-multiple-ubuntu-versions:
+    name: Test Ubuntu ${{ matrix.ubuntu }} Base
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        ubuntu: ["24.04", "22.04"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Set Ubuntu version
+        run: |
+          cat > .devcontainer/docker/packages.custom.yml << EOF
+          image_name: ubuntu
+          image_tag: "${{ matrix.ubuntu }}"
+          EOF
+
+      - name: Prepare host files
+        run: |
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Build with Ubuntu ${{ matrix.ubuntu }}
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Verify Ubuntu version
+        run: |
+          devcontainer up --workspace-folder .
+          devcontainer exec --workspace-folder . bash -c "
+            cat /etc/os-release | grep VERSION_ID | grep '${{ matrix.ubuntu }}'
+          "
+          devcontainer down --workspace-folder .
+
+  test-devcontainer-lifecycle:
+    name: Test Lifecycle Hooks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Prepare host files
+        run: |
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+      - name: Build devcontainer
+        run: |
+          devcontainer build --workspace-folder .
+
+      - name: Test initialization
+        run: |
+          # Check that .env was created during initializeCommand
+          test -f .devcontainer/docker/.env || { echo 'ERROR: .env not created'; exit 1; }
+          test -f .devcontainer/docker/packages.yml || { echo 'ERROR: packages.yml not created'; exit 1; }
+
+          echo "✓ initializeCommand executed successfully"
+
+      - name: Start and test post-start
+        run: |
+          devcontainer up --workspace-folder .
+
+          # Verify post-start configurations
+          devcontainer exec --workspace-folder . bash -c "
+            # Check shell configuration files created by post_start.py
+            test -f ~/.vscode_profile || { echo 'ERROR: .vscode_profile not created'; exit 1; }
+            test -f ~/.inputrc || { echo 'ERROR: .inputrc not created'; exit 1; }
+
+            # Check .bashrc was modified
+            grep -q '.vscode_profile' ~/.bashrc || { echo 'ERROR: .bashrc not updated'; exit 1; }
+
+            # Check git config was set
+            git config --global --get alias.st || { echo 'ERROR: git aliases not set'; exit 1; }
+
+            echo '✓ postStartCommand executed successfully'
+          "
+
+          devcontainer down --workspace-folder .
