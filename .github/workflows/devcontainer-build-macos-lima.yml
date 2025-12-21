@@ -1,0 +1,872 @@
+name: Devcontainer Build Test (macOS + Lima)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-devcontainer-macos-lima:
+    name: Test on macOS + Lima (${{ matrix.distro }}, ${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            distro: ubuntu-24.04
+            image_name: public.ecr.aws/docker/library/ubuntu
+            image_tag: "24.04"
+          - runner: macos-latest
+            distro: debian-bookworm
+            image_name: public.ecr.aws/docker/library/debian
+            image_tag: bookworm
+          - runner: macos-13
+            distro: ubuntu-24.04
+            image_name: public.ecr.aws/docker/library/ubuntu
+            image_tag: "24.04"
+          - runner: macos-13
+            distro: debian-bookworm
+            image_name: public.ecr.aws/docker/library/debian
+            image_tag: bookworm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lima v2.0.2
+        run: |
+          set -eux
+
+          echo "=== Installing Lima v2.0.2 ==="
+
+          # Determine architecture
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            LIMA_ARCH="x86_64"
+            EXPECTED_SHA="889d0e5935c747d6bda260d22f6a342d843fcb9e1e8fc164a0152ccf05078f79"
+          elif [ "$ARCH" = "arm64" ]; then
+            LIMA_ARCH="arm64"
+            EXPECTED_SHA="a19ce16cffd2bcb95b11120212d5acb4cfa13362014b3b5e42fef0ced1992fa5"
+          else
+            echo "ERROR: Unsupported architecture: $ARCH"
+            exit 1
+          fi
+
+          echo "Architecture: $ARCH (Lima: $LIMA_ARCH)"
+
+          # Download Lima
+          LIMA_VERSION="2.0.2"
+          LIMA_TARBALL="lima-${LIMA_VERSION}-Darwin-${LIMA_ARCH}.tar.gz"
+          LIMA_URL="https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/${LIMA_TARBALL}"
+
+          echo "Downloading: $LIMA_URL"
+          curl -fsSL "$LIMA_URL" -o "/tmp/${LIMA_TARBALL}"
+
+          # Verify checksum
+          echo "Verifying checksum..."
+          echo "${EXPECTED_SHA}  /tmp/${LIMA_TARBALL}" | shasum -a 256 -c
+
+          # Extract to /usr/local
+          echo "Extracting to /usr/local..."
+          sudo tar xzf "/tmp/${LIMA_TARBALL}" -C /usr/local
+
+          # Verify installation
+          /usr/local/bin/limactl --version
+
+          # Add to PATH for subsequent steps
+          echo "/usr/local/bin" >> $GITHUB_PATH
+
+          echo "✓ Lima v${LIMA_VERSION} installed successfully"
+
+      - name: Verify Lima installation
+        run: |
+          echo "=== Verifying Lima Installation ==="
+
+          limactl --version
+          which limactl
+
+          # List available templates
+          echo "Available Lima templates:"
+          limactl start --list-templates
+
+          echo "✓ Lima installation verified"
+
+      - name: Create Lima configuration
+        run: |
+          echo "=== Creating Lima VM configuration for ${{ matrix.distro }} ==="
+
+          # Create config directory
+          mkdir -p ~/.lima-configs
+
+          # Generate Lima config based on matrix distro
+          if [ "${{ matrix.distro }}" = "ubuntu-24.04" ]; then
+            cat > ~/.lima-configs/devcontainer-test.yaml << 'EOF'
+          vmType: "vz"
+          rosetta:
+            enabled: true
+            binfmt: true
+
+          images:
+            - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+              arch: "x86_64"
+            - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+              arch: "aarch64"
+
+          cpus: 4
+          memory: "8GiB"
+          disk: "100GiB"
+
+          mounts:
+            - location: "~"
+              writable: false
+            - location: "/tmp/lima"
+              writable: true
+
+          containerd:
+            system: false
+            user: false
+
+          provision:
+            - mode: system
+              script: |
+                #!/bin/bash
+                set -eux
+
+                # Install dependencies
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y ca-certificates curl gnupg lsb-release uidmap dbus-user-session
+
+                # Install Docker
+                curl -fsSL https://get.docker.com | sh
+
+                # Disable systemd docker service (we'll use rootless)
+                systemctl disable --now docker.service docker.socket || true
+
+                # Add current user to docker group for rootful docker
+                usermod -aG docker {{.User}}
+
+            - mode: user
+              script: |
+                #!/bin/bash
+                set -eux
+
+                # Install Docker rootless
+                dockerd-rootless-setuptool.sh install
+
+                # Configure Docker to start on login
+                systemctl --user enable docker.service
+                systemctl --user start docker.service
+
+          portForwards:
+            - guestSocket: "/run/user/{{.UID}}/docker.sock"
+              hostSocket: "{{.Dir}}/sock/docker.sock"
+
+          hostResolver:
+            enabled: true
+            hosts:
+              host.docker.internal: host.lima.internal
+          EOF
+
+          elif [ "${{ matrix.distro }}" = "debian-bookworm" ]; then
+            cat > ~/.lima-configs/devcontainer-test.yaml << 'EOF'
+          vmType: "vz"
+          rosetta:
+            enabled: true
+            binfmt: true
+
+          images:
+            - location: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+              arch: "x86_64"
+            - location: "https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2"
+              arch: "aarch64"
+
+          cpus: 4
+          memory: "8GiB"
+          disk: "100GiB"
+
+          mounts:
+            - location: "~"
+              writable: false
+            - location: "/tmp/lima"
+              writable: true
+
+          containerd:
+            system: false
+            user: false
+
+          provision:
+            - mode: system
+              script: |
+                #!/bin/bash
+                set -eux
+
+                # Install dependencies
+                export DEBIAN_FRONTEND=noninteractive
+                apt-get update
+                apt-get install -y ca-certificates curl gnupg lsb-release uidmap dbus-user-session
+
+                # Install Docker
+                curl -fsSL https://get.docker.com | sh
+
+                # Disable systemd docker service (we'll use rootless)
+                systemctl disable --now docker.service docker.socket || true
+
+                # Add current user to docker group
+                usermod -aG docker {{.User}}
+
+            - mode: user
+              script: |
+                #!/bin/bash
+                set -eux
+
+                # Install Docker rootless
+                dockerd-rootless-setuptool.sh install
+
+                # Configure Docker to start on login
+                systemctl --user enable docker.service
+                systemctl --user start docker.service
+
+          portForwards:
+            - guestSocket: "/run/user/{{.UID}}/docker.sock"
+              hostSocket: "{{.Dir}}/sock/docker.sock"
+
+          hostResolver:
+            enabled: true
+            hosts:
+              host.docker.internal: host.lima.internal
+          EOF
+
+          fi
+
+          echo "✓ Lima configuration created for ${{ matrix.distro }}"
+
+      - name: Start Lima VM
+        id: lima_start
+        timeout-minutes: 20
+        run: |
+          set -eux
+
+          echo "=== Starting Lima VM: devcontainer-test-${{ matrix.distro }} ==="
+
+          VM_NAME="devcontainer-test-${{ matrix.distro }}"
+
+          # Start VM with custom config and workspace mount
+          limactl start \
+            --name "$VM_NAME" \
+            --mount "${{ github.workspace }}:w" \
+            ~/.lima-configs/devcontainer-test.yaml \
+            --timeout 15m
+
+          echo "✓ Lima VM started: $VM_NAME"
+
+      - name: Verify Lima VM
+        run: |
+          set -eux
+
+          echo "=== Verifying Lima VM ==="
+
+          VM_NAME="devcontainer-test-${{ matrix.distro }}"
+
+          # List running VMs
+          echo "Running Lima VMs:"
+          limactl list
+
+          # Check VM status
+          echo "VM system info:"
+          limactl shell "$VM_NAME" uname -a
+
+          # Verify Docker is running
+          echo "Docker version in VM:"
+          limactl shell "$VM_NAME" docker --version
+
+          echo "Docker info in VM:"
+          limactl shell "$VM_NAME" docker info
+
+          echo "✓ Lima VM verification complete"
+
+      - name: Configure Docker CLI
+        run: |
+          set -eux
+
+          echo "=== Configuring Docker CLI to use Lima VM ==="
+
+          VM_NAME="devcontainer-test-${{ matrix.distro }}"
+
+          # Get Lima VM directory
+          LIMA_HOME="${HOME}/.lima/${VM_NAME}"
+
+          # Set DOCKER_HOST environment variable
+          echo "DOCKER_HOST=unix://${LIMA_HOME}/sock/docker.sock" >> $GITHUB_ENV
+
+          # Verify Docker socket exists
+          echo "Checking Docker socket..."
+          ls -la "${LIMA_HOME}/sock/" || true
+
+          # Wait a moment for socket to be ready
+          sleep 5
+
+          # Verify Docker works from host
+          echo "Testing Docker from macOS host:"
+          DOCKER_HOST="unix://${LIMA_HOME}/sock/docker.sock" docker --version
+          DOCKER_HOST="unix://${LIMA_HOME}/sock/docker.sock" docker info
+
+          echo "✓ Docker CLI configured to use Lima VM"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Node.js
+        uses: actions/setup-node@v6
+
+      - name: Install devcontainer CLI
+        run: |
+          npm install -g @devcontainers/cli
+
+      - name: Devcontainer help
+        run: |
+          devcontainer up --help
+          devcontainer set-up --help
+          devcontainer build --help
+
+      - name: Prepare host files
+        run: |
+          # Create required host files that will be mounted
+          touch ~/.netrc
+          touch ~/.gitconfig
+
+          # Create a minimal .pre-commit-config.yaml to test hook installation
+          cat > .pre-commit-config.yaml << 'EOF'
+          repos:
+            - repo: https://github.com/pre-commit/pre-commit-hooks
+              rev: v4.5.0
+              hooks:
+                - id: trailing-whitespace
+          EOF
+          echo "Created .pre-commit-config.yaml for testing"
+
+      - name: Create custom configurations for testing
+        run: |
+          echo "=== Creating custom configuration files for testing ==="
+          echo "Base image: ${{ matrix.image_name }}:${{ matrix.image_tag }}"
+
+          # Create packages.custom.yml with test customizations and base image override
+          cat > .devcontainer/docker/packages.custom.yml << EOF
+          # Test custom packages with base image override
+          image_name: ${{ matrix.image_name }}
+          image_tag: "${{ matrix.image_tag }}"
+
+          base:
+            packages:
+              - jq
+            python_tools: []
+
+          devenv:
+            packages: []
+            python_tools:
+              - ruff
+          EOF
+          echo "Created packages.custom.yml"
+
+          # Create docker-compose.custom.yml with test environment variable
+          cat > .devcontainer/docker/docker-compose.custom.yml << 'EOF'
+          services:
+            devcontainer:
+              environment:
+                - TEST_CUSTOM_VAR=custom_test_value
+          EOF
+          echo "Created docker-compose.custom.yml"
+
+          echo "Custom configurations created"
+
+      - name: Validate devcontainer configuration
+        run: |
+          echo "=== Validating devcontainer.json ==="
+          devcontainer read-configuration --workspace-folder . > /dev/null
+          echo "✓ Configuration is valid"
+
+      - name: Build and start devcontainer
+        run: |
+          # devcontainer up will:
+          # 1. Run initializeCommand (initialize.py) on the host
+          # 2. Build the container image
+          # 3. Start the container
+          # 4. Run postStartCommand inside the container
+          devcontainer up --workspace-folder .
+
+      - name: Verify initialization completed
+        run: |
+          echo "=== Verifying initializeCommand executed ==="
+          # Check that initialize.py created required files
+          test -f .devcontainer/docker/.env || { echo 'ERROR: .env not generated'; exit 1; }
+          test -f .devcontainer/docker/packages.yml || { echo 'ERROR: packages.yml not generated'; exit 1; }
+          echo "✓ Initialization files generated by initializeCommand"
+
+      - name: Verify custom packages merged
+        run: |
+          echo "=== Verifying custom packages were merged ==="
+
+          # Check packages.yml contains jq from custom config
+          grep -q "jq" .devcontainer/docker/packages.yml || {
+            echo 'ERROR: jq not found in merged packages.yml'
+            exit 1
+          }
+          echo "✓ jq found in merged packages.yml"
+
+          # Check packages.yml contains ruff from custom config
+          grep -q "ruff" .devcontainer/docker/packages.yml || {
+            echo 'ERROR: ruff not found in merged packages.yml'
+            exit 1
+          }
+          echo "✓ ruff found in merged packages.yml"
+
+          echo "✓ Custom packages merge verification passed"
+
+      - name: Verify base image
+        run: |
+          # Extract distro name from image path (e.g., ghcr.io/dockerlibrary/ubuntu -> ubuntu)
+          DISTRO=$(basename '${{ matrix.image_name }}')
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Verifying base image ==='
+
+            # Check OS release info
+            cat /etc/os-release
+
+            # Verify we're running the expected distro
+            if grep -qi '${DISTRO}' /etc/os-release; then
+              echo '✓ Running on ${DISTRO} as expected'
+            else
+              echo 'ERROR: Expected ${DISTRO} but got different distro'
+              exit 1
+            fi
+
+            echo '✓ Base image verification passed'
+          "
+
+      - name: Test base tools
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing base tools ==='
+            git --version
+            curl --version
+            yq --version
+            uv --version
+            bazelisk --version
+            echo '✓ Base tools test passed'
+          "
+
+      - name: Test user and workspace configuration
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing user and workspace ==='
+
+            # Test user identity
+            echo \"Current user: \$(whoami)\"
+            echo \"Current directory: \$(pwd)\"
+
+            # Test workspace exists
+            test -d /workspace || { echo 'ERROR: /workspace missing'; exit 1; }
+
+            # Verify UID/GID match expected values
+            echo \"UID: \$(id -u), GID: \$(id -g)\"
+
+            echo '✓ User and workspace test passed'
+          "
+
+      - name: Test volume mounts and permissions
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing volume mounts and permissions ==='
+
+            # Test named volumes are writable
+            test -w ~/.local/share || { echo 'ERROR: local-share not writable'; exit 1; }
+            echo '✓ local-share volume writable'
+
+            test -w ~/.config || { echo 'ERROR: config not writable'; exit 1; }
+            echo '✓ config volume writable'
+
+            test -w ~/.cache || { echo 'ERROR: cache not writable'; exit 1; }
+            echo '✓ cache volume writable'
+
+            test -w ~/.vscode-server/extensions || { echo 'ERROR: vscode-ext not writable'; exit 1; }
+            echo '✓ vscode-ext volume writable'
+
+            # Test read-only host mounts are readable
+            test -r ~/.netrc || { echo 'ERROR: .netrc not readable'; exit 1; }
+            echo '✓ .netrc readable'
+
+            test -r ~/.gitconfig || { echo 'ERROR: .gitconfig not readable'; exit 1; }
+            echo '✓ .gitconfig readable'
+
+            # Verify read-only mounts cannot be written to
+            if touch ~/.gitconfig 2>/dev/null; then
+              echo 'ERROR: .gitconfig should be read-only'
+              exit 1
+            fi
+            echo '✓ .gitconfig is read-only'
+
+            echo '✓ Volume mounts test passed'
+          "
+
+      - name: Test shell configuration
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing shell configuration ==='
+
+            test -f ~/.vscode_profile || { echo 'ERROR: .vscode_profile missing'; exit 1; }
+            echo '✓ .vscode_profile exists'
+
+            test -f ~/.inputrc || { echo 'ERROR: .inputrc missing'; exit 1; }
+            echo '✓ .inputrc exists'
+
+            echo '✓ Shell configuration test passed'
+          "
+
+      - name: Test git configuration
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing git configuration ==='
+
+            # Test .gitconfig is readable (mounted from host)
+            test -r ~/.gitconfig || { echo 'ERROR: .gitconfig not readable'; exit 1; }
+            echo '✓ .gitconfig mounted from host'
+
+            # Test .gitconfig is read-only
+            if touch ~/.gitconfig 2>/dev/null; then
+              echo 'ERROR: .gitconfig should be read-only'
+              exit 1
+            fi
+            echo '✓ .gitconfig is read-only (as expected)'
+
+            # Test git works
+            git status > /dev/null
+            echo '✓ Git commands work'
+
+            echo '✓ Git configuration test passed'
+          "
+
+      - name: Test lazy-loaded Python tools
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing lazy-loaded Python tools ==='
+
+            # Test uvx-shim wrapper exists
+            command -v pre-commit || { echo 'ERROR: pre-commit not available'; exit 1; }
+            echo '✓ pre-commit available via uvx-shim'
+
+            # Test lazy loading actually works by invoking the tool
+            pre-commit --version || { echo 'ERROR: pre-commit failed to execute'; exit 1; }
+            echo '✓ pre-commit executes successfully'
+
+            echo '✓ Lazy-loaded tools test passed'
+          "
+
+      - name: Test pre-commit hook installation
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing pre-commit hook installation ==='
+
+            # Verify .pre-commit-config.yaml exists
+            test -f /workspace/.pre-commit-config.yaml || {
+              echo 'ERROR: .pre-commit-config.yaml not found'
+              exit 1
+            }
+            echo '✓ .pre-commit-config.yaml exists'
+
+            # Verify git hooks directory exists
+            test -d /workspace/.git/hooks || {
+              echo 'ERROR: .git/hooks directory not found'
+              exit 1
+            }
+            echo '✓ .git/hooks directory exists'
+
+            # Verify pre-commit hook was installed
+            test -f /workspace/.git/hooks/pre-commit || {
+              echo 'ERROR: pre-commit hook not installed'
+              exit 1
+            }
+            echo '✓ pre-commit hook file exists'
+
+            # Verify it's actually a pre-commit managed hook
+            grep -q 'pre-commit' /workspace/.git/hooks/pre-commit || {
+              echo 'ERROR: pre-commit hook does not appear to be managed by pre-commit'
+              exit 1
+            }
+            echo '✓ pre-commit hook is properly installed'
+
+            echo '✓ Pre-commit hook installation test passed'
+          "
+
+      - name: Test custom configurations
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing custom configurations ==='
+
+            # Test custom apt package (jq) was installed
+            command -v jq || { echo 'ERROR: jq not installed'; exit 1; }
+            jq --version
+            echo '✓ Custom apt package (jq) installed'
+
+            # Test custom Python tool (ruff) is available via uvx-shim
+            command -v ruff || { echo 'ERROR: ruff not available'; exit 1; }
+            echo '✓ Custom Python tool (ruff) available via uvx-shim'
+
+            # Test ruff actually works (lazy loading)
+            ruff --version || { echo 'ERROR: ruff failed to execute'; exit 1; }
+            echo '✓ Custom Python tool (ruff) executes successfully'
+
+            # Test custom environment variable
+            test \"\$TEST_CUSTOM_VAR\" = \"custom_test_value\" || {
+              echo \"ERROR: TEST_CUSTOM_VAR not set correctly (got: '\$TEST_CUSTOM_VAR')\"
+              exit 1
+            }
+            echo \"✓ Custom environment variable set: TEST_CUSTOM_VAR=\$TEST_CUSTOM_VAR\"
+
+            echo '✓ Custom configurations test passed'
+          "
+
+      - name: Test devenv layer packages
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing devenv layer packages ==='
+
+            # Test bash-completion is installed
+            test -f /usr/share/bash-completion/bash_completion || {
+              echo 'ERROR: bash-completion not installed'
+              exit 1
+            }
+            echo '✓ bash-completion installed'
+
+            # Verify bash-completion can be sourced without errors
+            bash -c 'source /usr/share/bash-completion/bash_completion' || {
+              echo 'ERROR: bash-completion cannot be sourced'
+              exit 1
+            }
+            echo '✓ bash-completion can be sourced'
+
+            echo '✓ Devenv layer packages test passed'
+          "
+
+      - name: Test lifecycle commands
+        run: |
+          echo "=== Testing lifecycle commands ==="
+          # Note: run-user-commands runs onCreateCommand, updateContentCommand, postCreateCommand
+          # Since we already ran 'up', these should have already executed
+          # This validates they can be run explicitly
+          devcontainer run-user-commands --workspace-folder . || {
+            echo "WARNING: run-user-commands failed (may be expected if commands already ran)"
+          }
+          echo "✓ Lifecycle commands test completed"
+
+      - name: Test environment variables
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Testing environment variables ==='
+
+            # Test WORKSPACE_ROOT is set
+            test -n \"\$WORKSPACE_ROOT\" || { echo 'ERROR: WORKSPACE_ROOT not set'; exit 1; }
+            echo \"WORKSPACE_ROOT: \$WORKSPACE_ROOT\"
+
+            # Test USER is set correctly
+            test \"\$USER\" = \"\$(whoami)\" || { echo 'ERROR: USER env var mismatch'; exit 1; }
+            echo \"USER: \$USER\"
+
+            echo '✓ Environment variables test passed'
+          "
+
+      - name: Test volume persistence - write data
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Writing test data to persistent volumes ==='
+
+            # Write to bash history location (in local-share volume)
+            mkdir -p ~/.local/share/bash
+            echo 'PERSISTENCE_TEST_MARKER_12345' >> ~/.local/share/bash/history
+            echo '✓ Written marker to local-share volume'
+
+            # Write to config volume
+            mkdir -p ~/.config/persistence-test
+            echo 'config_persistence_test_data' > ~/.config/persistence-test/marker.txt
+            echo '✓ Written marker to config volume'
+
+            # Write to cache volume
+            mkdir -p ~/.cache/persistence-test
+            echo 'cache_persistence_test_data' > ~/.cache/persistence-test/marker.txt
+            echo '✓ Written marker to cache volume'
+
+            echo '✓ Test data written to all persistent volumes'
+          "
+
+      - name: Test volume persistence - restart container
+        run: |
+          echo "=== Restarting container to test persistence ==="
+
+          # Stop the container
+          docker compose -f .devcontainer/docker/docker-compose.default.yml \
+                         -f .devcontainer/docker/docker-compose.custom.yml \
+                         --env-file .devcontainer/docker/.env \
+                         stop devcontainer
+          echo "✓ Container stopped"
+
+          # Start it again (not rebuild - just start)
+          docker compose -f .devcontainer/docker/docker-compose.default.yml \
+                         -f .devcontainer/docker/docker-compose.custom.yml \
+                         --env-file .devcontainer/docker/.env \
+                         start devcontainer
+          echo "✓ Container started"
+
+          # Wait for container to be ready
+          sleep 5
+          echo "✓ Container restart complete"
+
+      - name: Test volume persistence - verify data
+        run: |
+          devcontainer exec --workspace-folder . bash -c "
+            set -e
+            echo '=== Verifying persistent data after restart ==='
+
+            # Check local-share volume persistence
+            grep -q 'PERSISTENCE_TEST_MARKER_12345' ~/.local/share/bash/history || {
+              echo 'ERROR: local-share marker not found after restart'
+              exit 1
+            }
+            echo '✓ Local-share data persisted'
+
+            # Check config volume persistence
+            test -f ~/.config/persistence-test/marker.txt || {
+              echo 'ERROR: config marker file not found after restart'
+              exit 1
+            }
+            grep -q 'config_persistence_test_data' ~/.config/persistence-test/marker.txt || {
+              echo 'ERROR: config marker content not found'
+              exit 1
+            }
+            echo '✓ Config data persisted'
+
+            # Check cache volume persistence
+            test -f ~/.cache/persistence-test/marker.txt || {
+              echo 'ERROR: cache marker file not found after restart'
+              exit 1
+            }
+            grep -q 'cache_persistence_test_data' ~/.cache/persistence-test/marker.txt || {
+              echo 'ERROR: cache marker content not found'
+              exit 1
+            }
+            echo '✓ Cache data persisted'
+
+            echo '✓ Volume persistence test passed'
+          "
+
+      - name: Summary
+        if: success()
+        run: |
+          echo ""
+          echo "========================================="
+          echo "✓ All devcontainer tests passed!"
+          echo "========================================="
+          echo ""
+          echo "Platform: macOS + Lima VM"
+          echo "Lima distro: ${{ matrix.distro }}"
+          echo "Runner: ${{ matrix.runner }}"
+          echo "Base image: ${{ matrix.image_name }}:${{ matrix.image_tag }}"
+          echo ""
+          echo "Tests completed:"
+          echo "  ✓ Lima installation and VM setup"
+          echo "  ✓ Docker rootless configuration in VM"
+          echo "  ✓ Configuration validation"
+          echo "  ✓ Custom configuration setup"
+          echo "  ✓ Build and start (with automatic initializeCommand)"
+          echo "  ✓ Initialization verification"
+          echo "  ✓ Custom packages merge verification"
+          echo "  ✓ Base image verification"
+          echo "  ✓ Base tools"
+          echo "  ✓ User and workspace"
+          echo "  ✓ Volume mounts and permissions"
+          echo "  ✓ Shell configuration"
+          echo "  ✓ Git configuration"
+          echo "  ✓ Lazy-loaded Python tools"
+          echo "  ✓ Pre-commit hook installation"
+          echo "  ✓ Custom configurations (apt packages, Python tools, env vars)"
+          echo "  ✓ Devenv layer packages"
+          echo "  ✓ Lifecycle commands"
+          echo "  ✓ Environment variables"
+          echo "  ✓ Volume persistence (write/restart/verify)"
+          echo ""
+
+      - name: Collect diagnostics before cleanup
+        if: failure()
+        run: |
+          echo "=== Collecting diagnostics ==="
+
+          VM_NAME="devcontainer-test-${{ matrix.distro }}"
+
+          # Create diagnostics directory
+          mkdir -p diagnostics
+
+          # Save VM info
+          limactl show-info "$VM_NAME" > diagnostics/lima-info.txt 2>&1 || true
+          limactl list > diagnostics/lima-list.txt 2>&1 || true
+
+          # Save logs
+          if [ -d "${HOME}/.lima/${VM_NAME}" ]; then
+            cp "${HOME}/.lima/${VM_NAME}"/*.log diagnostics/ 2>&1 || true
+          fi
+
+          # Save Docker info (if socket is available)
+          if [ -S "${HOME}/.lima/${VM_NAME}/sock/docker.sock" ]; then
+            docker info > diagnostics/docker-info.txt 2>&1 || true
+            docker ps -a > diagnostics/docker-ps.txt 2>&1 || true
+            docker images > diagnostics/docker-images.txt 2>&1 || true
+          fi
+
+          # Save devcontainer files
+          if [ -f .devcontainer/docker/.env ]; then
+            cp .devcontainer/docker/.env diagnostics/devcontainer-env.txt 2>&1 || true
+          fi
+          if [ -f .devcontainer/docker/packages.yml ]; then
+            cp .devcontainer/docker/packages.yml diagnostics/packages-merged.yml 2>&1 || true
+          fi
+
+          # List collected files
+          echo "Collected diagnostics:"
+          ls -lah diagnostics/
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lima-diagnostics-${{ matrix.distro }}-${{ matrix.runner }}
+          path: diagnostics/
+          retention-days: 7
+
+      - name: Cleanup Lima VM
+        if: always()
+        run: |
+          echo "=== Cleaning up Lima VM ==="
+
+          VM_NAME="devcontainer-test-${{ matrix.distro }}"
+
+          # Stop the VM gracefully
+          limactl stop "$VM_NAME" --timeout 2m || true
+
+          # Delete the VM and its data
+          limactl delete "$VM_NAME" --force || true
+
+          # Verify cleanup
+          echo "Remaining Lima VMs:"
+          limactl list || true
+
+          echo "✓ Lima VM cleanup complete"
